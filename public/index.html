@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Forest Platformer Combat</title>
+    <link rel="icon" type="image/png" href="img/favicon.png" />
+    <style>
+      /* Global styling – in‑game we want the target cursor */
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        font-family: Arial, sans-serif;
+        cursor: url("img/cursor.png") 16 16, auto;
+      }
+      canvas {
+        display: block;
+        cursor: url("img/cursor.png") 16 16, auto;
+      }
+      /* Forest-themed Start Screen */
+      #startScreen {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: url("img/background.png") no-repeat center center;
+        background-size: cover;
+        color: #eee;
+        text-align: center;
+        padding-top: 100px;
+        cursor: url("img/cursor.png") 16 16, auto;
+        z-index: 10;
+      }
+      #startScreen input {
+        font-size: 16px;
+        padding: 5px;
+        margin: 10px;
+      }
+      #startScreen button {
+        font-size: 18px;
+        padding: 5px 10px;
+        margin: 10px;
+      }
+      /* Settings Modal */
+      #settingsScreen {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: 400px;
+        background: rgba(50, 50, 50, 0.95);
+        color: #fff;
+        padding: 20px;
+        border-radius: 5px;
+        display: none;
+        z-index: 20;
+      }
+      #settingsScreen label {
+        display: block;
+        margin: 5px 0;
+      }
+      #settingsScreen input[type="text"] {
+        width: 100%;
+        padding: 3px;
+      }
+      #settingsScreen input[type="checkbox"] {
+        margin-right: 5px;
+      }
+      #settingsScreen button {
+        margin-top: 10px;
+      }
+      /* Chat Container – transparent, slim and positioned at the top left */
+      #chatContainer {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        width: 200px;
+        max-height: 150px;
+        background: rgba(0, 0, 0, 0.5);
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        overflow: hidden;
+        color: #fff;
+        font-size: 12px;
+        display: none;
+        z-index: 5;
+      }
+      #chatMessages {
+        height: 100px;
+        overflow-y: auto;
+        padding: 5px;
+      }
+      #chatInput {
+        width: 100%;
+        box-sizing: border-box;
+        border: none;
+        border-top: 1px solid #ccc;
+        padding: 3px;
+        font-size: 12px;
+        background: transparent;
+        color: #fff;
+      }
+      #chatInput:focus {
+        outline: none;
+      }
+      /* (Additional HUD elements like FPS, CPS, & Health will be drawn on the canvas) */
+    </style>
+    <!-- Load Socket.IO from the server -->
+    <script src="/socket.io/socket.io.js"></script>
+  </head>
+  <body>
+    <!-- Start Screen (forest themed) -->
+    <div id="startScreen">
+      <h1>Forest Platformer Combat</h1>
+      <input type="text" id="playerName" placeholder="Enter your name" />
+      <div id="nameError" style="color:red;"></div>
+      <br />
+      <button id="playButton">Play</button>
+      <button id="openSettingsButton">Settings</button>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settingsScreen">
+      <h2>Settings</h2>
+      <div>
+        <label>
+          Move Left (comma separated):
+          <input type="text" id="control-moveLeft" value="ArrowLeft,a" />
+        </label>
+        <label>
+          Move Right (comma separated):
+          <input type="text" id="control-moveRight" value="ArrowRight,d" />
+        </label>
+        <label>
+          Jump (comma separated):
+          <input type="text" id="control-jump" value="ArrowUp,w, " />
+        </label>
+        <label>
+          Sword (default LeftClick):
+          <input type="text" id="control-sword" value="LeftClick" />
+        </label>
+        <label>
+          Bow (default RightClick):
+          <input type="text" id="control-bow" value="RightClick" />
+        </label>
+      </div>
+      <div>
+        <label
+          ><input type="checkbox" id="hud-fps" checked />
+          Show FPS</label
+        >
+        <label
+          ><input type="checkbox" id="hud-cps" checked />
+          Show CPS</label
+        >
+        <label
+          ><input type="checkbox" id="hud-health" checked />
+          Show Health</label
+        >
+      </div>
+      <button id="saveSettingsButton">Save Settings</button>
+      <button id="closeSettingsButton">Close</button>
+    </div>
+
+    <!-- Game Canvas -->
+    <canvas id="game" style="display: none;"></canvas>
+
+    <!-- Chat Container -->
+    <div id="chatContainer">
+      <div id="chatMessages"></div>
+      <input id="chatInput" type="text" placeholder="Type a message and press Enter" />
+    </div>
+
+    <script>
+      //////////////////////////////
+      // GLOBAL VARIABLES & SETTINGS
+      //////////////////////////////
+
+      // Default control mappings (each action accepts comma-separated keys)
+      let controls = {
+        moveLeft: ["ArrowLeft", "a"],
+        moveRight: ["ArrowRight", "d"],
+        jump: ["ArrowUp", "w", " "],
+        sword: ["LeftClick"],
+        bow: ["RightClick"]
+      };
+
+      // HUD settings (toggles for FPS, CPS, and Health)
+      let hudSettings = {
+        showFPS: true,
+        showCPS: true,
+        showHealth: true
+      };
+
+      // Metrics for HUD
+      let lastFrameTime = performance.now();
+      let fps = 0;
+      const clickTimes = [];
+
+      //////////////////////////////
+      // START SCREEN & SETTINGS UI
+      //////////////////////////////
+      const startScreen = document.getElementById("startScreen");
+      const playButton = document.getElementById("playButton");
+      const openSettingsButton = document.getElementById("openSettingsButton");
+      const playerNameInput = document.getElementById("playerName");
+      const nameError = document.getElementById("nameError");
+
+      const settingsScreen = document.getElementById("settingsScreen");
+      const saveSettingsButton = document.getElementById("saveSettingsButton");
+      const closeSettingsButton = document.getElementById("closeSettingsButton");
+
+      openSettingsButton.onclick = () => {
+        settingsScreen.style.display = "block";
+      };
+      closeSettingsButton.onclick = () => {
+        settingsScreen.style.display = "none";
+      };
+      saveSettingsButton.onclick = () => {
+        controls.moveLeft = document
+          .getElementById("control-moveLeft")
+          .value.split(",")
+          .map((s) => s.trim());
+        controls.moveRight = document
+          .getElementById("control-moveRight")
+          .value.split(",")
+          .map((s) => s.trim());
+        controls.jump = document
+          .getElementById("control-jump")
+          .value.split(",")
+          .map((s) => s.trim());
+        controls.sword = document
+          .getElementById("control-sword")
+          .value.split(",")
+          .map((s) => s.trim());
+        controls.bow = document
+          .getElementById("control-bow")
+          .value.split(",")
+          .map((s) => s.trim());
+        hudSettings.showFPS = document.getElementById("hud-fps").checked;
+        hudSettings.showCPS = document.getElementById("hud-cps").checked;
+        hudSettings.showHealth = document.getElementById("hud-health").checked;
+        settingsScreen.style.display = "none";
+      };
+
+      // A basic list of banned words (lowercase only)
+      const bannedWords = ["fuck", "shit", "bitch", "damn", "asshole"];
+      // Only allow English letters and spaces.
+      function isValidName(name) {
+        if (!/^[A-Za-z\s]+$/.test(name.trim())) return false;
+        let lower = name.trim().toLowerCase();
+        for (let word of bannedWords) {
+          if (lower.includes(word)) return false;
+        }
+        return name.trim().length > 0;
+      }
+
+      playButton.onclick = () => {
+        const name = playerNameInput.value;
+        if (!isValidName(name)) {
+          nameError.textContent =
+            "Please choose a valid English name (no banned words).";
+          return;
+        }
+        nameError.textContent = "";
+        startScreen.style.display = "none";
+        document.getElementById("game").style.display = "block";
+        document.getElementById("chatContainer").style.display = "block";
+        initGame(name);
+      };
+
+      //////////////////////////////
+      // GAME INITIALIZATION & ASSETS
+      //////////////////////////////
+
+      const canvas = document.getElementById("game");
+      const ctx = canvas.getContext("2d");
+
+      // Load textures and images.
+      const woodTexture = new Image();
+      woodTexture.src = "img/platform_wood.png";
+      const backgroundImg = new Image();
+      backgroundImg.src = "img/background.png";
+      const characterImg = new Image();
+      characterImg.src = "img/char.png";
+
+      // Global dimensions and platforms.
+      let groundY = 0;
+      let platforms = [];
+      function resizeCanvas() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        groundY = canvas.height;
+        platforms = [
+          { x: canvas.width * 0.05,  y: canvas.height * 0.85, width: canvas.width * 0.2,  height: 20 },
+          { x: canvas.width * 0.3,   y: canvas.height * 0.75, width: canvas.width * 0.2,  height: 20 },
+          { x: canvas.width * 0.6,   y: canvas.height * 0.65, width: canvas.width * 0.15, height: 20 },
+          { x: canvas.width * 0.8,   y: canvas.height * 0.8,  width: canvas.width * 0.2,  height: 20 },
+          { x: canvas.width * 0.4,   y: canvas.height * 0.5,  width: canvas.width * 0.2,  height: 20 },
+          { x: canvas.width * 0.15,  y: canvas.height * 0.6,  width: canvas.width * 0.15, height: 20 }
+        ];
+      }
+      window.addEventListener("resize", resizeCanvas);
+      resizeCanvas();
+
+      //////////////////////////////
+      // PLAYER & REMOTE PLAYERS
+      //////////////////////////////
+      const player = {
+        x: 50,
+        y: 50,
+        width: 40,
+        height: 40,
+        velocityX: 0,
+        velocityY: 0,
+        jumpCount: 0,
+        maxJumps: 2,
+        facing: "right",
+        health: 100,
+        isAlive: true,
+        name: ""
+      };
+      const remotePlayers = {};
+
+      const keys = {};
+      window.addEventListener("keydown", (e) => {
+        keys[e.key] = true;
+      });
+      window.addEventListener("keyup", (e) => {
+        keys[e.key] = false;
+      });
+      function isActionActive(action) {
+        if (!controls[action] || controls[action].length === 0) return false;
+        return controls[action].some((k) => keys[k]);
+      }
+
+      //////////////////////////////
+      // COMBAT & MOUSE HANDLING
+      //////////////////////////////
+      let isChargingBow = false,
+        bowChargeStartTime = null,
+        lastBowShotTime = 0,
+        arrows = [],
+        swordSwing = false,
+        swordSwingTimer = 0;
+      const bowMinChargeTime = 500,
+        bowMaxChargeTime = 1500;
+
+      let mouseX = 0,
+        mouseY = 0;
+      canvas.addEventListener("mousemove", (e) => {
+        const rect = canvas.getBoundingClientRect();
+        mouseX = e.clientX - rect.left;
+        mouseY = e.clientY - rect.top;
+      });
+      canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+      canvas.addEventListener("mousedown", (e) => {
+        if (controls.bow.includes("RightClick") && e.button === 2) {
+          if (performance.now() - lastBowShotTime >= bowMinChargeTime) {
+            isChargingBow = true;
+            bowChargeStartTime = performance.now();
+          }
+        } else if (controls.sword.includes("LeftClick") && e.button === 0) {
+          triggerSwordSwing();
+          recordClick();
+        }
+      });
+      canvas.addEventListener("mouseup", (e) => {
+        if (controls.bow.includes("RightClick") && e.button === 2 && isChargingBow) {
+          const chargeTime = performance.now() - bowChargeStartTime;
+          if (chargeTime >= bowMinChargeTime) {
+            const effectiveCharge = Math.min(chargeTime, bowMaxChargeTime);
+            fireArrow(effectiveCharge);
+            lastBowShotTime = performance.now();
+          }
+          isChargingBow = false;
+          bowChargeStartTime = null;
+          recordClick();
+        }
+      });
+      window.addEventListener("keydown", (e) => {
+        if (controls.sword.includes(e.key)) {
+          triggerSwordSwing();
+        }
+      });
+      function recordClick() {
+        clickTimes.push(performance.now());
+      }
+
+      //////////////////////////////
+      // SOCKET / MULTIPLAYER
+      //////////////////////////////
+      const socket = io();
+      socket.emit("joinLobby", { name: player.name });
+      socket.on("currentPlayers", (playersData) => {
+        for (let id in playersData) {
+          if (id !== socket.id) {
+            remotePlayers[id] = playersData[id];
+          }
+        }
+      });
+      socket.on("newPlayer", (playerData) => {
+        remotePlayers[playerData.id] = playerData;
+      });
+      socket.on("playerMoved", (playerData) => {
+        remotePlayers[playerData.id] = playerData;
+      });
+      socket.on("playerDisconnected", (id) => {
+        delete remotePlayers[id];
+      });
+      socket.on("chatMessage", (data) => {
+        const chatMessages = document.getElementById("chatMessages");
+        const messageEl = document.createElement("div");
+        messageEl.textContent =
+          (data.name || data.id).substr(0, 5) + ": " + data.message;
+        chatMessages.appendChild(messageEl);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+      });
+      socket.on("playerHealthUpdate", (data) => {
+        if (data.id === socket.id) {
+          player.health = data.health;
+          if (player.health <= 0) player.isAlive = false;
+        } else if (remotePlayers[data.id]) {
+          remotePlayers[data.id].health = data.health;
+        }
+      });
+      socket.on("playerDied", (id) => {
+        if (id === socket.id) {
+          player.isAlive = false;
+          console.log("You died. Respawning in 3 seconds...");
+        } else if (remotePlayers[id]) {
+          remotePlayers[id].isAlive = false;
+        }
+      });
+      socket.on("playerRespawned", (data) => {
+        if (data.id === socket.id) {
+          player.health = data.health;
+          player.x = data.x;
+          player.y = data.y;
+          player.isAlive = true;
+        } else if (remotePlayers[data.id]) {
+          remotePlayers[data.id].health = data.health;
+          remotePlayers[data.id].x = data.x;
+          remotePlayers[data.id].y = data.y;
+          remotePlayers[data.id].isAlive = true;
+        }
+      });
+      const chatInput = document.getElementById("chatInput");
+      chatInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && chatInput.value.trim() !== "") {
+          socket.emit("chatMessage", chatInput.value);
+          chatInput.value = "";
+        }
+      });
+
+      //////////////////////////////
+      // GAME FUNCTIONS
+      //////////////////////////////
+      function drawBackground() {
+        if (backgroundImg.complete) {
+          ctx.drawImage(backgroundImg, 0, 0, canvas.width, canvas.height);
+        } else {
+          ctx.fillStyle = "#000";
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+      }
+      function drawPlatforms() {
+        platforms.forEach((p) => {
+          if (woodTexture.complete) {
+            ctx.drawImage(woodTexture, p.x, p.y, p.width, p.height);
+          } else {
+            ctx.fillStyle = "#8B4513";
+            ctx.fillRect(p.x, p.y, p.width, p.height);
+          }
+        });
+      }
+      function drawHealthBar(x, y, width, health) {
+        const barHeight = 6;
+        ctx.fillStyle = "grey";
+        ctx.fillRect(x, y - barHeight - 4, width, barHeight);
+        ctx.fillStyle = "green";
+        ctx.fillRect(x, y - barHeight - 4, width * (health / 100), barHeight);
+        ctx.strokeStyle = "black";
+        ctx.strokeRect(x, y - barHeight - 4, width, barHeight);
+      }
+      function drawPlayer() {
+        ctx.save();
+        if (player.velocityX < 0) player.facing = "left";
+        else if (player.velocityX > 0) player.facing = "right";
+        if (!player.isAlive) {
+          ctx.fillStyle = "rgba(100,100,100,0.5)";
+          ctx.fillRect(player.x, player.y, player.width, player.height);
+        } else {
+          if (player.facing === "left") {
+            ctx.translate(player.x + player.width, player.y);
+            ctx.scale(-1, 1);
+            ctx.drawImage(characterImg, 0, 0, player.width, player.height);
+          } else {
+            ctx.drawImage(characterImg, player.x, player.y, player.width, player.height);
+          }
+        }
+        ctx.restore();
+        drawHealthBar(player.x, player.y, player.width, player.health);
+        ctx.fillStyle = "#fff";
+        ctx.font = "10px Arial";
+        ctx.textAlign = "center";
+        ctx.fillText(player.name, player.x + player.width / 2, player.y - 10);
+      }
+      function drawRemotePlayers() {
+        for (let id in remotePlayers) {
+          const remote = remotePlayers[id];
+          ctx.save();
+          if (remote.facing === "left") {
+            ctx.translate(remote.x + remote.width, remote.y);
+            ctx.scale(-1, 1);
+            ctx.drawImage(characterImg, 0, 0, remote.width, remote.height);
+          } else {
+            ctx.drawImage(characterImg, remote.x, remote.y, remote.width, remote.height);
+          }
+          ctx.restore();
+          drawHealthBar(remote.x, remote.y, remote.width, remote.health || 100);
+          ctx.fillStyle = "#fff";
+          ctx.font = "10px Arial";
+          ctx.textAlign = "center";
+          ctx.fillText(
+            remote.name ? remote.name : id.substr(0, 5),
+            remote.x + remote.width / 2,
+            remote.y - 10
+          );
+        }
+      }
+      function fireArrow(effectiveCharge) {
+        const chargeRatio =
+          (effectiveCharge - bowMinChargeTime) / (bowMaxChargeTime - bowMinChargeTime);
+        const arrowSpeed = 5 + chargeRatio * 10;
+        const playerCenterX = player.x + player.width / 2;
+        const playerCenterY = player.y + player.height / 2;
+        const dx = mouseX - playerCenterX;
+        const dy = mouseY - playerCenterY;
+        const angle = Math.atan2(dy, dx);
+        const arrow = {
+          x: playerCenterX,
+          y: playerCenterY,
+          vx: arrowSpeed * Math.cos(angle),
+          vy: arrowSpeed * Math.sin(angle),
+          width: 20,
+          height: 5,
+          angle: angle
+        };
+        arrows.push(arrow);
+      }
+      function triggerSwordSwing() {
+        if (!player.isAlive) return;
+        swordSwing = true;
+        swordSwingTimer = 15;
+        checkSwordCollisions();
+        recordClick();
+      }
+      function checkSwordCollisions() {
+        const hitBox = {
+          x: player.facing === "right" ? player.x + player.width : player.x - 50,
+          y: player.y,
+          width: 50,
+          height: player.height
+        };
+        for (let id in remotePlayers) {
+          const remote = remotePlayers[id];
+          if (!remote.isAlive) continue;
+          if (
+            hitBox.x < remote.x + remote.width &&
+            hitBox.x + hitBox.width > remote.x &&
+            hitBox.y < remote.y + remote.height &&
+            hitBox.y + hitBox.height > remote.y
+          ) {
+            socket.emit("playerHit", { target: id, damage: 30 });
+          }
+        }
+      }
+      function updateProjectiles() {
+        for (let i = arrows.length - 1; i >= 0; i--) {
+          const a = arrows[i];
+          a.x += a.vx;
+          a.y += a.vy;
+          if (
+            a.x > canvas.width ||
+            a.x + a.width < 0 ||
+            a.y > canvas.height ||
+            a.y + a.height < 0
+          ) {
+            arrows.splice(i, 1);
+          }
+        }
+        if (swordSwing) {
+          swordSwingTimer--;
+          if (swordSwingTimer <= 0) {
+            swordSwing = false;
+          }
+        }
+      }
+      function drawWeapons() {
+        arrows.forEach((a) => {
+          ctx.save();
+          ctx.translate(a.x, a.y);
+          ctx.rotate(a.angle);
+          ctx.fillStyle = "brown";
+          ctx.fillRect(0, -a.height / 2, a.width, a.height);
+          ctx.beginPath();
+          ctx.moveTo(a.width, -a.height);
+          ctx.lineTo(a.width + 5, 0);
+          ctx.lineTo(a.width, a.height);
+          ctx.closePath();
+          ctx.fillStyle = "gray";
+          ctx.fill();
+          ctx.restore();
+        });
+        if (isChargingBow && bowChargeStartTime) {
+          const chargeElapsed = performance.now() - bowChargeStartTime;
+          const ratio = Math.min(chargeElapsed / bowMaxChargeTime, 1);
+          const bowX = player.x - 30;
+          const bowY = player.y + player.height / 2;
+          ctx.save();
+          ctx.strokeStyle = "orange";
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.arc(bowX, bowY, 20, Math.PI / 2 - ratio, Math.PI / 2 + ratio);
+          ctx.stroke();
+          ctx.restore();
+        }
+        if (swordSwing) {
+          ctx.save();
+          let startX, startY;
+          if (player.facing === "right") {
+            startX = player.x + player.width;
+            startY = player.y + player.height / 2;
+            var grad = ctx.createLinearGradient(startX, startY, startX + 50, startY);
+          } else {
+            startX = player.x;
+            startY = player.y + player.height / 2;
+            var grad = ctx.createLinearGradient(startX - 50, startY, startX, startY);
+          }
+          grad.addColorStop(0, "red");
+          grad.addColorStop(0.5, "yellow");
+          grad.addColorStop(1, "blue");
+          ctx.strokeStyle = grad;
+          ctx.lineWidth = 4;
+          ctx.beginPath();
+          if (player.facing === "right") {
+            ctx.moveTo(startX, startY);
+            ctx.lineTo(startX + 50, startY);
+          } else {
+            ctx.moveTo(startX, startY);
+            ctx.lineTo(startX - 50, startY);
+          }
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+      function drawHUD() {
+        ctx.save();
+        ctx.fillStyle = "#fff";
+        ctx.font = "14px Arial";
+        ctx.textAlign = "right";
+        let y = 20;
+        if (hudSettings.showFPS) {
+          ctx.fillText("FPS: " + fps.toFixed(1), canvas.width - 10, y);
+          y += 20;
+        }
+        if (hudSettings.showCPS) {
+          const now = performance.now();
+          while (clickTimes.length && now - clickTimes[0] > 1000) {
+            clickTimes.shift();
+          }
+          ctx.fillText("CPS: " + clickTimes.length, canvas.width - 10, y);
+          y += 20;
+        }
+        if (hudSettings.showHealth) {
+          ctx.fillText("Health: " + player.health + "/100", canvas.width - 10, y);
+          y += 20;
+        }
+        ctx.restore();
+      }
+      function movePlayer() {
+        if (!player.isAlive) return;
+        let newX = player.x,
+          newY = player.y;
+        if (isActionActive("moveLeft")) {
+          player.velocityX = -5;
+        } else if (isActionActive("moveRight")) {
+          player.velocityX = 5;
+        } else {
+          player.velocityX = 0;
+        }
+        newX += player.velocityX;
+        if (isActionActive("jump") && player.jumpCount < player.maxJumps) {
+          player.velocityY = -22;
+          player.jumpCount++;
+        }
+        player.velocityY += 1.5;
+        newY += player.velocityY;
+        for (let p of platforms) {
+          if (
+            newX < p.x + p.width &&
+            newX + player.width > p.x &&
+            newY < p.y + p.height &&
+            newY + player.height > p.y
+          ) {
+            const overlapX = Math.min(newX + player.width - p.x, p.x + p.width - newX);
+            const overlapY = Math.min(newY + player.height - p.y, p.y + p.height - newY);
+            if (overlapX < overlapY) {
+              newX =
+                newX + player.width / 2 < p.x + p.width / 2
+                  ? p.x - player.width
+                  : p.x + p.width;
+              player.velocityX = 0;
+            } else {
+              if (newY + player.height / 2 < p.y + p.height / 2) {
+                newY = p.y - player.height;
+                player.velocityY = 0;
+                player.jumpCount = 0;
+              } else {
+                newY = p.y + p.height;
+                player.velocityY = 0;
+              }
+            }
+          }
+        }
+        if (newX < 0) {
+          newX = 0;
+          player.velocityX = 0;
+        }
+        if (newX + player.width > canvas.width) {
+          newX = canvas.width - player.width;
+          player.velocityX = 0;
+        }
+        if (newY + player.height > groundY) {
+          newY = groundY - player.height;
+          player.velocityY = 0;
+          player.jumpCount = 0;
+        }
+        player.x = newX;
+        player.y = newY;
+      }
+      function checkArrowCollisions() {
+        for (let i = arrows.length - 1; i >= 0; i--) {
+          let arrow = arrows[i];
+          for (let id in remotePlayers) {
+            const remote = remotePlayers[id];
+            if (
+              remote.isAlive !== false &&
+              arrow.x < remote.x + remote.width &&
+              arrow.x + arrow.width > remote.x &&
+              arrow.y < remote.y + remote.height &&
+              arrow.y + arrow.height > remote.y
+            ) {
+              socket.emit("playerHit", { target: id, damage: 20 });
+              arrows.splice(i, 1);
+              break;
+            }
+          }
+        }
+      }
+      function gameLoop() {
+        let now = performance.now();
+        let delta = now - lastFrameTime;
+        fps = 1000 / delta;
+        lastFrameTime = now;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        drawBackground();
+        drawPlatforms();
+        movePlayer();
+        drawPlayer();
+        drawRemotePlayers();
+        updateProjectiles();
+        checkArrowCollisions();
+        drawWeapons();
+        drawHUD();
+        socket.emit("playerUpdate", {
+          x: player.x,
+          y: player.y,
+          facing: player.facing,
+          width: player.width,
+          height: player.height,
+          name: player.name
+        });
+        requestAnimationFrame(gameLoop);
+      }
+      function initGame(playerName) {
+        player.name = playerName;
+        socket.emit("joinLobby", { name: player.name });
+        gameLoop();
+      }
+    </script>
+  </body>
+</html>
